@@ -18,7 +18,8 @@ OLED_HEIGHT = 32
 # SDA: GPIO 2 (physical pin 3)
 # SCL: GPIO 3 (physical pin 5)
 i2c = busio.I2C(board.SCL, board.SDA)
-display = adafruit_ssd1306.SSD1306_I21C(OLED_WIDTH, OLED_HEIGHT, i2c, addr=0x3C)
+# Corrected typo: SSD1306_I2C instead of SSD1306_I21C
+display = adafruit_ssd1306.SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, i2c, addr=0x3C)
 
 # Clear the display initially
 display.fill(0)
@@ -33,7 +34,8 @@ MIN_SEPARATION = 5 # Minimum distance to maintain from other birds
 COHESION_WEIGHT = 0.001
 ALIGNMENT_WEIGHT = 0.05
 SEPARATION_WEIGHT = 0.05
-# BOUNDARY_WEIGHT is no longer needed as boundaries are handled by direct velocity reversal
+LEADER_FOLLOW_WEIGHT = 0.01 # How strongly non-leader birds follow the leader
+RANDOM_JITTER_MAGNITUDE = 0.05 # Small random force applied to all birds for wandering
 
 MAX_SPEED = 2.0
 MIN_SPEED = 0.5
@@ -110,24 +112,44 @@ class Bird:
 
         return steer_x * SEPARATION_WEIGHT, steer_y * SEPARATION_WEIGHT
 
-    # The _rule_boundaries method is removed as boundary handling is now direct.
+    def _rule_follow_leader(self, leader_bird):
+        """
+        Steers the bird towards the leader's position.
+        """
+        if leader_bird is None:
+            return 0, 0
 
-    def update(self, flock):
+        return (leader_bird.x - self.x) * LEADER_FOLLOW_WEIGHT, \
+               (leader_bird.y - self.y) * LEADER_FOLLOW_WEIGHT
+
+    def update(self, flock, is_leader=False):
         """
         Updates the bird's position and velocity based on flocking rules and
         handles boundary collisions (bouncing off edges).
         :param flock: The list of all birds in the simulation.
+        :param is_leader: True if this bird is the designated leader.
         """
-        neighbors = self._get_neighbors(flock)
+        # Add random jitter for more organic movement to all birds
+        self.vx += random.uniform(-RANDOM_JITTER_MAGNITUDE, RANDOM_JITTER_MAGNITUDE)
+        self.vy += random.uniform(-RANDOM_JITTER_MAGNITUDE, RANDOM_JITTER_MAGNITUDE)
 
-        # Calculate steering forces from each rule
-        coh_vx, coh_vy = self._rule_cohesion(neighbors)
-        ali_vx, ali_vy = self._rule_alignment(neighbors)
-        sep_vx, sep_vy = self._rule_separation(neighbors)
+        if not is_leader:
+            neighbors = self._get_neighbors(flock)
+            leader_bird = flock[0] # Assuming flock[0] is always the leader
 
-        # Apply forces to velocity
-        self.vx += coh_vx + ali_vx + sep_vx
-        self.vy += coh_vy + ali_vy + sep_vy
+            # Calculate steering forces from each rule
+            coh_vx, coh_vy = self._rule_cohesion(neighbors)
+            ali_vx, ali_vy = self._rule_alignment(neighbors)
+            sep_vx, sep_vy = self._rule_separation(neighbors)
+            follow_vx, follow_vy = self._rule_follow_leader(leader_bird)
+
+            # Apply forces to velocity
+            self.vx += coh_vx + ali_vx + sep_vx + follow_vx
+            self.vy += coh_vy + ali_vy + sep_vy + follow_vy
+        else:
+            # Leader's movement is primarily random and then boundary-checked
+            # No flocking rules for the leader itself
+            pass
 
         # Limit speed
         speed = math.sqrt(self.vx**2 + self.vy**2)
@@ -135,10 +157,13 @@ class Bird:
             self.vx = (self.vx / speed) * MAX_SPEED
             self.vy = (self.vy / speed) * MAX_SPEED
         elif speed < MIN_SPEED:
-            # Prevent birds from stopping completely
-            # If speed is zero, give it a random impulse to start moving
-            self.vx = (self.vx / speed) * MIN_SPEED if speed > 0 else random.uniform(-1, 1) * MIN_SPEED
-            self.vy = (self.vy / speed) * MIN_SPEED if speed > 0 else random.uniform(-1, 1) * MIN_SPEED
+            # Prevent birds from stopping completely. If speed is zero, give it a random impulse.
+            if speed > 0:
+                self.vx = (self.vx / speed) * MIN_SPEED
+                self.vy = (self.vy / speed) * MIN_SPEED
+            else:
+                self.vx = random.uniform(-1, 1) * MIN_SPEED
+                self.vy = random.uniform(-1, 1) * MIN_SPEED
 
 
         # Update position
@@ -147,22 +172,26 @@ class Bird:
 
         # --- Boundary Bounce Logic ---
         # If a bird hits the horizontal boundary, reverse its horizontal velocity
-        # and clamp its position to the edge.
+        # and clamp its position to the edge. Add a small push to prevent sticking.
         if self.x < 0:
             self.x = 0
             self.vx *= -1
+            self.vx += 0.1 # Small positive push away from the wall
         elif self.x >= self.width: # Use >= width as pixels are 0 to width-1
             self.x = self.width - 1 # Clamp to the last valid pixel
             self.vx *= -1
+            self.vx -= 0.1 # Small negative push away from the wall
 
         # If a bird hits the vertical boundary, reverse its vertical velocity
-        # and clamp its position to the edge.
+        # and clamp its position to the edge. Add a small push to prevent sticking.
         if self.y < 0:
             self.y = 0
             self.vy *= -1
+            self.vy += 0.1 # Small positive push away from the wall
         elif self.y >= self.height: # Use >= height as pixels are 0 to height-1
             self.y = self.height - 1 # Clamp to the last valid pixel
             self.vy *= -1
+            self.vy -= 0.1 # Small negative push away from the wall
 
 # --- Main Simulation Loop ---
 def run_simulation():
@@ -182,8 +211,9 @@ def run_simulation():
             draw = ImageDraw.Draw(image)
 
             # Update and draw each bird
-            for bird in flock:
-                bird.update(flock)
+            for i, bird in enumerate(flock):
+                # Pass is_leader=True for the first bird (index 0)
+                bird.update(flock, is_leader=(i == 0))
                 # Draw the bird as a single white pixel
                 # Ensure coordinates are integers and within bounds
                 draw.point((int(bird.x), int(bird.y)), fill=255)
