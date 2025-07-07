@@ -18,7 +18,7 @@ OLED_HEIGHT = 32
 # SDA: GPIO 2 (physical pin 3)
 # SCL: GPIO 3 (physical pin 5)
 i2c = busio.I2C(board.SCL, board.SDA)
-display = adafruit_ssd1306.SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, i2c, addr=0x3C)
+display = adafruit_ssd1306.SSD1306_I21C(OLED_WIDTH, OLED_HEIGHT, i2c, addr=0x3C)
 
 # Clear the display initially
 display.fill(0)
@@ -33,7 +33,7 @@ MIN_SEPARATION = 5 # Minimum distance to maintain from other birds
 COHESION_WEIGHT = 0.001
 ALIGNMENT_WEIGHT = 0.05
 SEPARATION_WEIGHT = 0.05
-BOUNDARY_WEIGHT = 0.1 # Weight for steering birds back into bounds
+# BOUNDARY_WEIGHT is no longer needed as boundaries are handled by direct velocity reversal
 
 MAX_SPEED = 2.0
 MIN_SPEED = 0.5
@@ -110,27 +110,12 @@ class Bird:
 
         return steer_x * SEPARATION_WEIGHT, steer_y * SEPARATION_WEIGHT
 
-    def _rule_boundaries(self):
-        """
-        Keeps birds within the screen boundaries by steering them back.
-        """
-        steer_x, steer_y = 0, 0
-        padding = 10 # Distance from edge to start steering
-
-        if self.x < padding:
-            steer_x = BOUNDARY_WEIGHT
-        elif self.x > self.width - padding:
-            steer_x = -BOUNDARY_WEIGHT
-
-        if self.y < padding:
-            steer_y = BOUNDARY_WEIGHT
-        elif self.y > self.height - padding:
-            steer_y = -BOUNDARY_WEIGHT
-        return steer_x, steer_y
+    # The _rule_boundaries method is removed as boundary handling is now direct.
 
     def update(self, flock):
         """
-        Updates the bird's position and velocity based on flocking rules.
+        Updates the bird's position and velocity based on flocking rules and
+        handles boundary collisions (bouncing off edges).
         :param flock: The list of all birds in the simulation.
         """
         neighbors = self._get_neighbors(flock)
@@ -139,11 +124,10 @@ class Bird:
         coh_vx, coh_vy = self._rule_cohesion(neighbors)
         ali_vx, ali_vy = self._rule_alignment(neighbors)
         sep_vx, sep_vy = self._rule_separation(neighbors)
-        bound_vx, bound_vy = self._rule_boundaries()
 
         # Apply forces to velocity
-        self.vx += coh_vx + ali_vx + sep_vx + bound_vx
-        self.vy += coh_vy + ali_vy + sep_vy + bound_vy
+        self.vx += coh_vx + ali_vx + sep_vx
+        self.vy += coh_vy + ali_vy + sep_vy
 
         # Limit speed
         speed = math.sqrt(self.vx**2 + self.vy**2)
@@ -152,6 +136,7 @@ class Bird:
             self.vy = (self.vy / speed) * MAX_SPEED
         elif speed < MIN_SPEED:
             # Prevent birds from stopping completely
+            # If speed is zero, give it a random impulse to start moving
             self.vx = (self.vx / speed) * MIN_SPEED if speed > 0 else random.uniform(-1, 1) * MIN_SPEED
             self.vy = (self.vy / speed) * MIN_SPEED if speed > 0 else random.uniform(-1, 1) * MIN_SPEED
 
@@ -160,9 +145,24 @@ class Bird:
         self.x += self.vx
         self.y += self.vy
 
-        # Wrap around boundaries (for a continuous feel)
-        self.x %= self.width
-        self.y %= self.height
+        # --- Boundary Bounce Logic ---
+        # If a bird hits the horizontal boundary, reverse its horizontal velocity
+        # and clamp its position to the edge.
+        if self.x < 0:
+            self.x = 0
+            self.vx *= -1
+        elif self.x >= self.width: # Use >= width as pixels are 0 to width-1
+            self.x = self.width - 1 # Clamp to the last valid pixel
+            self.vx *= -1
+
+        # If a bird hits the vertical boundary, reverse its vertical velocity
+        # and clamp its position to the edge.
+        if self.y < 0:
+            self.y = 0
+            self.vy *= -1
+        elif self.y >= self.height: # Use >= height as pixels are 0 to height-1
+            self.y = self.height - 1 # Clamp to the last valid pixel
+            self.vy *= -1
 
 # --- Main Simulation Loop ---
 def run_simulation():
